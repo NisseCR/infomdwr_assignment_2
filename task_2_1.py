@@ -1,6 +1,5 @@
 import pandas as pd
-import numpy as np
-import csv
+import time
 
 
 pd.set_option('display.max_columns', 500)
@@ -15,6 +14,25 @@ def load_data():
 
 def filter_id(df: pd.DataFrame) -> pd.DataFrame:
     df = df.set_index('id')
+    return df
+
+
+def preprocess_text(df: pd.DataFrame) -> pd.DataFrame:
+    for col in df.columns:
+        if df.dtypes[col] != 'object':
+            continue
+
+        # Lowercase
+        df[col] = df[col].str.lower()
+
+        # Whitespaces
+        # TODO fix this
+        df[col] = df[col].str.replace(r'\s+', ' ')
+        df[col] = df[col].str.replace(r'\t+', ' ')
+
+        # NA values
+        df[col] = df[col].fillna("")
+
     return df
 
 
@@ -43,10 +61,10 @@ def levenshtein_sim(s: str, t: str) -> float:
                                  dist[row][col - 1] + 1,  # insertion
                                  dist[row - 1][col - 1] + c)  # substitution
 
-    max = max(len(s), len(t))
+    maximum = max(len(s), len(t))
     med = dist[row][col]
 
-    return 1 - (med / max)
+    return 1 - (med / maximum)
 
 
 def jaro_sim(s: str, t: str) -> float:
@@ -109,24 +127,37 @@ def record_sim(r1: pd.Series, r2: pd.Series) -> float:
     s_c = jaro_sim(r1['venue'], r2['venue'])
     s_y = year_sim(r1['year'], r2['year'])
 
-    return (s_t + s_a + s_c + s_y) * 0.25
+    return 0.45 * s_t + 0.45 * s_a + 0.05 * s_c + 0.05 * s_y
 
 
-def pairwise_comparison(df: pd.DataFrame) -> pd.DataFrame:
-    pass
+def pairwise_comparison(df1: pd.DataFrame, df2: pd.DataFrame) -> list:
+    ids = []
+
+    for i, r1 in df1.iterrows():
+        for j, r2 in df2.iterrows():
+            sim_score = record_sim(r1, r2)
+            if sim_score >= 0:
+                ids.append([i, j])
+
+    return ids
 
 
-def preprocess_text(df: pd.DataFrame) -> pd.DataFrame:
-    for col in df.columns:
-        if df.dtypes[col] != 'object':
-            continue
-
-        df[col] = df[col].str.lower()
-        # TODO fix this
-        df[col] = df[col].str.replace(r'\s+', ' ')
-        df[col] = df[col].str.replace(r'\t+', ' ')
-
+def read_mapping() -> pd.DataFrame:
+    df = pd.read_csv('./data/DBLP-ACM_perfectMapping.csv', header=0)
     return df
+
+
+def join_mapping(ids: list) -> pd.DataFrame:
+    df_mapping = read_mapping()
+    df_results = pd.DataFrame(data=ids, columns=['idDBLP', 'idACM'])
+    df_results['match'] = 1
+
+    # TODO remove
+    df_results.iloc[0] = ['conf/sigmod/SlivinskasJS01', 375678, 1]
+
+    df_match = pd.merge(df_mapping, df_results, how='left', on=['idDBLP', 'idACM'])
+    df_match['match'] = df_match['match'].fillna(0)
+    return df_match
 
 
 def main():
@@ -140,9 +171,24 @@ def main():
     df_acm = preprocess_text(df_acm)
     df_dblp = preprocess_text(df_dblp)
 
-    # EDA
-    print(df_acm.head())
-    print(df_dblp.head())
+    # Find similar records
+    time_start = time.time()
+
+    # TODO error continue, they wont run, no catchy
+    df_acm_sub = df_acm.iloc[0:4]
+    df_dblp_sub = df_dblp.iloc[0:300]
+    record_ids = pairwise_comparison(df_dblp_sub, df_acm_sub)
+    duration = round(time.time() - time_start, 2)
+
+
+    # Calculate precision
+    df_match = join_mapping(record_ids)
+    n_matches = df_match['match'].sum()
+    precision = round(n_matches / len(df_match), 2)
+    print(f"Precision is {precision}")
+
+    # Runtime
+    print(f"Runtime of the pairwise similarity comparison {duration} seconds.")
 
 
 if __name__ == '__main__':
