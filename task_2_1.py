@@ -1,4 +1,5 @@
 import pandas as pd
+import py_stringmatching as sm
 import time
 
 
@@ -36,84 +37,6 @@ def preprocess_text(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def levenshtein_sim(s: str, t: str) -> float:
-    rows = len(s) + 1
-    cols = len(t) + 1
-    dist = [[0 for x in range(cols)] for x in range(rows)]
-
-    # source prefixes can be transformed into empty strings
-    # by deletions:
-    for i in range(1, rows):
-        dist[i][0] = i
-
-    # target prefixes can be created from an empty source string
-    # by inserting the characters
-    for i in range(1, cols):
-        dist[0][i] = i
-
-    for col in range(1, cols):
-        for row in range(1, rows):
-            if s[row - 1] == t[col - 1]:
-                c = 0
-            else:
-                c = 2
-            dist[row][col] = min(dist[row - 1][col] + 1,  # deletion
-                                 dist[row][col - 1] + 1,  # insertion
-                                 dist[row - 1][col - 1] + c)  # substitution
-
-    maximum = max(len(s), len(t))
-    med = dist[row][col]
-
-    return 1 - (med / maximum)
-
-
-def jaro_sim(s: str, t: str) -> float:
-    s_len = len(s)
-    t_len = len(t)
-
-    if s_len == 0 and t_len == 0:
-        return 1
-
-    match_distance = (max(s_len, t_len) // 2) - 1
-
-    s_matches = [False] * s_len
-    t_matches = [False] * t_len
-
-    matches = 0
-    transpositions = 0
-
-    for i in range(s_len):
-        start = max(0, i - match_distance)
-        end = min(i + match_distance + 1, t_len)
-
-        for j in range(start, end):
-            if t_matches[j]:
-                continue
-            if s[i] != t[j]:
-                continue
-            s_matches[i] = True
-            t_matches[j] = True
-            matches += 1
-            break
-
-    if matches == 0:
-        return 0
-
-    k = 0
-    for i in range(s_len):
-        if not s_matches[i]:
-            continue
-        while not t_matches[k]:
-            k += 1
-        if s[i] != t[k]:
-            transpositions += 1
-        k += 1
-
-    return ((matches / s_len) +
-            (matches / t_len) +
-            ((matches - transpositions / 2) / matches)) / 3
-
-
 def year_sim(s, t):
     if s == t:
         return 1
@@ -121,23 +44,32 @@ def year_sim(s, t):
     return 0
 
 
-def record_sim(r1: pd.Series, r2: pd.Series) -> float:
-    s_t = levenshtein_sim(r1['title'], r2['title'])
-    s_a = jaro_sim(r1['authors'], r2['authors'])
-    s_c = jaro_sim(r1['venue'], r2['venue'])
-    s_y = year_sim(r1['year'], r2['year'])
-
-    return 0.45 * s_t + 0.45 * s_a + 0.05 * s_c + 0.05 * s_y
+def record_sim(r: pd.Series, lev: sm.Levenshtein, jaro: sm.Jaro, aff: sm.Affine) -> float:
+    s_t = lev.get_sim_score(r['title_x'], r['title_y'])
+    s_a = jaro.get_sim_score(r['authors_x'], r['authors_y'])
+    s_c = aff.get_raw_score(r['venue_x'], r['venue_y'])
+    s_y = year_sim(r['year_x'], r['year_y'])
+    return 1
 
 
 def pairwise_comparison(df1: pd.DataFrame, df2: pd.DataFrame) -> list:
     ids = []
 
-    for i, r1 in df1.iterrows():
-        for j, r2 in df2.iterrows():
-            sim_score = record_sim(r1, r2)
-            if sim_score >= 0:
-                ids.append([i, j])
+    # Initiate models
+    lev = sm.Levenshtein()
+    jaro = sm.Jaro()
+    aff = sm.Affine()
+
+    # Vectorised way
+    df = pd.merge(df1, df2, how='cross')
+    df = df.iloc[0:100000]
+
+    time_s = time.time()
+    df.apply(lambda r: record_sim(r, lev, jaro, aff), axis=1)
+    print(f"Duration is {time.time() - time_s} seconds")
+
+    print(df.head())
+    print(len(df))
 
     return ids
 
@@ -177,9 +109,8 @@ def main():
     # TODO error continue, they wont run, no catchy
     df_acm_sub = df_acm.iloc[0:4]
     df_dblp_sub = df_dblp.iloc[0:300]
-    record_ids = pairwise_comparison(df_dblp_sub, df_acm_sub)
+    record_ids = pairwise_comparison(df_dblp, df_acm)
     duration = round(time.time() - time_start, 2)
-
 
     # Calculate precision
     df_match = join_mapping(record_ids)
