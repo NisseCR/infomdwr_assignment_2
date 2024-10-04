@@ -67,7 +67,6 @@ def pairwise_comparison(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
 
     # Apply sim score calculations to rows (vectorised).
     df['sim_title'], df['sim_authors'], df['sim_venue'], df['sim_year'] = np.nan, np.nan, np.nan, np.nan
-    df = df.iloc[0:3000]   # TODO remove
     df = df.apply(lambda r: record_sim(r, lev, jaro, aff), axis=1)
 
     # Apply min-max scaling (normalisation) to sim_venue.
@@ -91,8 +90,8 @@ def join_mapping(df_sims: pd.DataFrame, df_mapping: pd.DataFrame) -> pd.DataFram
     print(df_mapping.dtypes)
 
     # Left join to indicate correct predictions.
-    df_sims['match'] = 1
-    df_match = pd.merge(df_mapping, df_sims, how='left', on=['idDBLP', 'idACM'])
+    df_mapping['match'] = 1
+    df_match = pd.merge(df_sims, df_mapping, how='left', on=['idDBLP', 'idACM'])
     df_match['match'] = df_match['match'].fillna(0)
     return df_match
 
@@ -103,9 +102,6 @@ def main():
     # Preprocess text.
     df_acm = preprocess(df_acm)
     df_dblp = preprocess(df_dblp)
-
-    print(df_acm.head())
-    print(df_dblp.head())
 
     # Find similar records.
     time_start = time.time()
@@ -119,7 +115,11 @@ def main():
     df_match = join_mapping(df_sims, df_mapping)
     n_matches = df_match['match'].sum()
     precision = round(n_matches / len(df_match), 2)
+
+    # Print results.
     print(df_match.head())
+    print(df_match.describe())
+    print(df_match.info())
     print(f"Precision is {precision} with {n_matches} correct matches.")
 
     # Runtime
