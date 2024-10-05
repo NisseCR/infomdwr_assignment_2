@@ -1,24 +1,36 @@
+from typing import Tuple
+
+import numpy as np
 import pandas as pd
 import py_stringmatching as sm
 import time
 
+from pandas import DataFrame
 
 pd.set_option('display.max_columns', 500)
 pd.set_option('display.width', 1000)
 
 
-def load_data():
+def load_data() -> tuple[DataFrame, DataFrame, DataFrame]:
+    """
+    Load the data from the 3 cvs files.
+    :return: 3 dataframes
+    """
     df_acm = pd.read_csv('./data/ACM.csv', header=0)
     df_dblp = pd.read_csv('./data/DBLP2.csv', header=0, encoding='latin1')
-    return df_acm, df_dblp
+    df_mapping = pd.read_csv('./data/DBLP-ACM_perfectMapping.csv', header=0)
+    return df_acm, df_dblp, df_mapping
 
 
-def filter_id(df: pd.DataFrame) -> pd.DataFrame:
+def preprocess(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Set the id columns as the index and preprocess text columns. Preprocessing includes removing whitespaces,
+    converting to lowercase and replacing missing values with the empty word "".
+    :param df: Dataframe containing raw data
+    :return: Dataframe with preprocessed data
+    """
     df = df.set_index('id')
-    return df
 
-
-def preprocess_text(df: pd.DataFrame) -> pd.DataFrame:
     for col in df.columns:
         if df.dtypes[col] != 'object':
             continue
@@ -27,9 +39,7 @@ def preprocess_text(df: pd.DataFrame) -> pd.DataFrame:
         df[col] = df[col].str.lower()
 
         # Whitespaces
-        # TODO fix this
         df[col] = df[col].str.replace(r'\s+', ' ')
-        df[col] = df[col].str.replace(r'\t+', ' ')
 
         # NA values
         df[col] = df[col].fillna("")
@@ -37,89 +47,119 @@ def preprocess_text(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def year_sim(s, t):
+def year_sim(s, t) -> int:
+    """
+    Match / mismatch between two year instances. Returns 1 if matched.
+    :param s: Year instance left
+    :param t: Year instance right
+    :return: Match result
+    """
     if s == t:
         return 1
 
     return 0
 
 
-def record_sim(r: pd.Series, lev: sm.Levenshtein, jaro: sm.Jaro, aff: sm.Affine) -> float:
-    s_t = lev.get_sim_score(r['title_x'], r['title_y'])
-    s_a = jaro.get_sim_score(r['authors_x'], r['authors_y'])
-    s_c = aff.get_raw_score(r['venue_x'], r['venue_y'])
-    s_y = year_sim(r['year_x'], r['year_y'])
-    return 1
+def record_sim(r: pd.Series, lev: sm.Levenshtein, jaro: sm.Jaro, aff: sm.Affine) -> pd.Series:
+    """
+    Apply py_stringmatching built-in similarity scores to a single record. Note that venue (using the affine similarity)
+    is not normalised.
+    :param r: data record
+    :param lev: Levenshtein class instance
+    :param jaro: Jaro class instance
+    :param aff: Affine class instance
+    :return: Record including similarity scores per attribute
+    """
+    r['sim_title'] = lev.get_sim_score(r['title_x'], r['title_y'])
+    r['sim_authors'] = jaro.get_sim_score(r['authors_x'], r['authors_y'])
+    r['sim_venue'] = aff.get_raw_score(r['venue_x'], r['venue_y'])
+    r['sim_year'] = year_sim(r['year_x'], r['year_y'])
+    return r
 
 
-def pairwise_comparison(df1: pd.DataFrame, df2: pd.DataFrame) -> list:
-    ids = []
+def pairwise_comparison(df1: pd.DataFrame, df2: pd.DataFrame) -> pd.DataFrame:
+    """
+    Cross join the two dataframes and perform pairwise comparison through similarity scores. The venue score
+    (calculated by the affine similarity) is normalised using the min-max formula. Similarity scores are applied in a
+    vectorised method to increase performance for the O(n^2) algorithm.
+    Finally, all the attribute scores are aggregated using custom weights. The resulting score has a range from 0 to 1.
+    :param df1: Dataframe left
+    :param df2: Dataframe right
+    :return: Cross-joined data with similarity score between records
+    """
+    # Reset ids
+    df1 = df1.reset_index(names='id')
+    df2 = df2.reset_index(names='id')
 
-    # Initiate models
+    # Initiate models.
     lev = sm.Levenshtein()
     jaro = sm.Jaro()
     aff = sm.Affine()
 
-    # Vectorised way
+    # Cross join for pairwise comparison.
     df = pd.merge(df1, df2, how='cross')
-    df = df.iloc[0:100000]
 
-    time_s = time.time()
-    df.apply(lambda r: record_sim(r, lev, jaro, aff), axis=1)
-    print(f"Duration is {time.time() - time_s} seconds")
+    # Apply sim score calculations to rows (vectorised).
+    df['sim_title'], df['sim_authors'], df['sim_venue'], df['sim_year'] = np.nan, np.nan, np.nan, np.nan
+    df = df.apply(lambda r: record_sim(r, lev, jaro, aff), axis=1)
 
-    print(df.head())
-    print(len(df))
+    # Apply min-max scaling (normalisation) to sim_venue.
+    df['sim_venue'] = (df['sim_venue'] - df['sim_venue'].min()) / (df['sim_venue'].max() - df['sim_venue'].min())
 
-    return ids
-
-
-def read_mapping() -> pd.DataFrame:
-    df = pd.read_csv('./data/DBLP-ACM_perfectMapping.csv', header=0)
+    # Calculate similarity score.
+    df['sim_score'] = 0.45 * df['sim_title'] + 0.45 * df['sim_authors'] + 0.05 * df['sim_venue'] + 0.05 * df['sim_year']
     return df
 
 
-def join_mapping(ids: list) -> pd.DataFrame:
-    df_mapping = read_mapping()
-    df_results = pd.DataFrame(data=ids, columns=['idDBLP', 'idACM'])
-    df_results['match'] = 1
+def join_mapping(df_sims: pd.DataFrame, df_mapping: pd.DataFrame) -> pd.DataFrame:
+    """
+    Join the results of similar records to the true duplicate record data. A 'match' column is added to indicate whether
+    a match was correct.
+    :param df_sims: Dataframe containing similarity scores of cross-join
+    :param df_mapping: Dataframe containing the true duplicate records
+    :return: Dataframe with indicator of correct results
+    """
+    # Retrieve ids only.
+    df_sims = df_sims[['id_x', 'id_y']].rename(columns={'id_x': 'idDBLP', 'id_y': 'idACM'})
+    print(df_sims.head())
+    print(df_sims.dtypes)
+    print(df_mapping.dtypes)
 
-    # TODO remove
-    df_results.iloc[0] = ['conf/sigmod/SlivinskasJS01', 375678, 1]
-
-    df_match = pd.merge(df_mapping, df_results, how='left', on=['idDBLP', 'idACM'])
+    # Left join to indicate correct predictions.
+    df_mapping['match'] = 1
+    df_match = pd.merge(df_sims, df_mapping, how='left', on=['idDBLP', 'idACM'])
     df_match['match'] = df_match['match'].fillna(0)
     return df_match
 
 
 def main():
-    df_acm, df_dblp = load_data()
+    df_acm, df_dblp, df_mapping = load_data()
 
-    # Filter id
-    df_acm = filter_id(df_acm)
-    df_dblp = filter_id(df_dblp)
+    # Preprocess text.
+    df_acm = preprocess(df_acm)
+    df_dblp = preprocess(df_dblp)
 
-    # Preprocess text
-    df_acm = preprocess_text(df_acm)
-    df_dblp = preprocess_text(df_dblp)
-
-    # Find similar records
+    # Find similar records.
     time_start = time.time()
-
-    # TODO error continue, they wont run, no catchy
-    df_acm_sub = df_acm.iloc[0:4]
-    df_dblp_sub = df_dblp.iloc[0:300]
-    record_ids = pairwise_comparison(df_dblp, df_acm)
+    df_sims = pairwise_comparison(df_dblp, df_acm)
     duration = round(time.time() - time_start, 2)
 
+    # Filter similar records.
+    df_sims = df_sims[df_sims['sim_score'] > 0.7]
+
     # Calculate precision
-    df_match = join_mapping(record_ids)
+    df_match = join_mapping(df_sims, df_mapping)
     n_matches = df_match['match'].sum()
     precision = round(n_matches / len(df_match), 2)
-    print(f"Precision is {precision}")
+
+    # Print results.
+    print(df_match.head())
+    print(df_match.describe())
+    print(df_match.info())
+    print(f"Precision is {precision} with {n_matches} correct matches.")
 
     # Runtime
-    print(f"Runtime of the pairwise similarity comparison {duration} seconds.")
+    print(f"Runtime of the pairwise similarity comparison is {duration} seconds.")
 
 
 if __name__ == '__main__':
