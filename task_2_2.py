@@ -316,7 +316,7 @@ def compute_precision(candidate_df: pd.DataFrame,
     # Compute the precision by finding the intersection of the
     # candidate and match
     correct_pairs_set = candidate_pairs_set & match_pairs_set
-    precision = len(correct_pairs_set) / len(candidate_pairs_set)
+    precision = len(correct_pairs_set) / len(match_pairs_set)
     print("Precision: ", precision)
 
 
@@ -348,7 +348,7 @@ def main():
     shingles_1hot = build_1hot(shingles, vocab)
 
     # Generate the MinHash array and compute the signatures
-    hash_num = 140
+    hash_num = 800
     min_arr = get_minhash_arr(hash_num, vocab)
     signatures = build_signatures(min_arr, shingles_1hot)
 
@@ -356,7 +356,7 @@ def main():
     compute_similarity_matrix(signatures)
 
     # Apply the LSH algorithm
-    num_buck = 20
+    num_buck = 100
     lsh = algo.LSH(num_buck)
     for sig in signatures:
         lsh.add_hash(sig)
