@@ -121,9 +121,6 @@ def join_mapping(df_sims: pd.DataFrame, df_mapping: pd.DataFrame) -> pd.DataFram
     """
     # Retrieve ids only.
     df_sims = df_sims[['id_x', 'id_y']].rename(columns={'id_x': 'idDBLP', 'id_y': 'idACM'})
-    print(df_sims.head())
-    print(df_sims.dtypes)
-    print(df_mapping.dtypes)
 
     # Left join to indicate correct predictions.
     df_mapping['match'] = 1
