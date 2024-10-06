@@ -1,12 +1,230 @@
 import numpy as np
 import pandas as pd
 import py_stringmatching as sm
-import matplotlib.pyplot as mp
 import seaborn as sb
 from itertools import combinations
 import time
+import matplotlib.pyplot as plt
+from collections import Counter
+import scipy
+
 
 from pandas import DataFrame
+
+
+# TASK 1
+def task_1():
+    # loading the dataset
+    excs_df = pd.read_excel('./data/excerpt_topics_total_7.xlsx')
+
+    # explore the head and tail of the dataframe in order to check if the dataset is loaded in correctly
+    print(excs_df.head)
+    print(excs_df.columns)
+
+    def primary_key_check(df: pd.DataFrame):
+        id_col = df['ID']
+        text_col = df['text']
+
+        len_id = len(id_col)
+        dist_id_len = len(id_col.unique())
+        dist_text_len = len(text_col.unique())
+
+        # unique text n / unique ID n
+        if dist_text_len / dist_id_len == 1:
+            print(f'The unique texts of the excerpts as long as the unique IDs')
+        else:
+            print(f'The text are not unique:  {dist_text_len}/ {dist_id_len}')
+
+        # unique ID's / total ID's
+        if dist_id_len / len_id == 1:
+            print(f'ID is a primary key \n'
+                  f'and the number of excerpts is {len_id}')
+        else:
+            print(f'ID is not a primary key \n'
+                  f'and the number of unique excerpts_ids is {dist_id_len}')
+
+    primary_key_check(excs_df)
+
+    '''
+    Now we know that the ID is the primary key and the text are a candidate key and thus that we work with unique excerpts. 
+    '''
+
+    '''
+    To get a better understanding of the size of the text were working with, we wanted to know the minimal and maximal length of words. 
+    To be more, precise we created a boxplot of the number of words in all excerpts. This allows us to know how large the 
+    snippets of texts are, that we're working with. 
+    '''
+
+    def boxplot_words_excs(texts: pd.Series):
+        # count the number of elements distinguished by spaces in the excerpts
+        word_count = [len(exc.split(' ')) for exc in texts]
+
+        print(f'The range of words are between {np.min(word_count)} and {np.max(word_count)}\n'
+              f'with an average of {round(np.mean(word_count), 4)} and\n'
+              f'with 95% of the excerpts between {np.percentile(word_count, q=[2.5, 97.5])}')
+
+        plt.boxplot(word_count)
+        plt.ylabel('Word (n)')
+        plt.title('Boxplot of the words per excerpts')
+        # plt.show()
+
+    boxplot_words_excs(excs_df['text'])
+
+    '''
+    The number of words within the excerpts can differ strongly (4 to 1093 words). 
+    However, 95% of the data remains between 24 and 180 words. Thus we work with small sentences to small paragraphs. 
+    '''
+
+    '''
+    The dataset has two important attributes that can be utilised in an analysis:
+    The century in which an excerpt was probably written and the religious keyword that is used. 
+    It is important to know the representativeness of data in different centuries if the dataset is analysed as a whole. 
+    It is also import to how many excerpts are anonymously written. If a temporal analysis would be conducted, we should make
+    a choice what we would do with these datapoints.
+    Furthermore, it is necessary to investigate if multiple keywords are not covered in one excerpt entry. The main concern
+    of this dataset is the difference in excerpts with these keywords in it. If keywords would overlap, it could influence the results.
+    '''
+
+    def histo_cent(cent: pd.Series):
+        print(f'Number of NAs in century: {cent.isna().sum()}')
+
+        # histogram of the centuries with a bin for every century
+        plt.hist(cent, bins=len(cent.unique()))
+        plt.xlabel('Century')
+        plt.ylabel('Excerpts (n)')
+        plt.title('Histogram of excerpts in Late Antiquity')
+        # plt.show()
+
+    histo_cent(cent=excs_df['century'])
+
+    '''
+    Apparently, the unknown authors are dated or they were excluded from the dataset. 
+    The authors of these excerpts were mostly writing in the 4th to the 6th century. 
+    This could resemble an imbalance in the digitization process or gathering of the data,
+    or could resemble the dominance of Greek in the 2th and 3th century in intellectual circles 
+    and a steep decease of Latin writing ofter the collapse of the administration of Rome in 476. 
+    '''
+
+    def keyword_labeling(df):
+        # slice df to lemmitized tokens of the text and the religious keywords
+        token_kw_df = df[['tokens', 'keyword']]
+
+        # get unique keywords
+        uniq_kws = token_kw_df['keyword'].unique()
+
+        search_tokens = ['synagoga', 'ecclesia', 'domus']
+
+        results = []
+        for kw in uniq_kws:
+            # get subsets of the tokens with the unique keywords
+            sub_tokens = token_kw_df[token_kw_df['keyword'] == kw]['tokens'].tolist()
+
+            sub_result = []
+            for s_tok in search_tokens:
+                # if the religious word is in tokens than add 1 else 0 and sum the result
+                sum_search_words = np.sum(1 if s_tok in token else 0 for token in sub_tokens)
+                sub_result.append(sum_search_words)
+
+            results.append(sub_result)
+
+        # print the dataframe of the results
+        results_df = pd.DataFrame(results, columns=search_tokens, index=uniq_kws)
+
+        print(results_df.to_string())
+
+    keyword_labeling(excs_df)
+
+    '''
+    The keywords as labeled the data are not exclusionary for the other keywords. They are almost exclusionary but not fully. 
+    For further analysis, we should consider the overlapping excerpts. 
+    '''
+
+    '''
+    So far, we have interrogated the structure of the data, the uniqueness and size of the excerpts, and the distributions and quality of the attributes keywords and centuries.
+    The last phase of the EDA concerns the Sentiment Analysis (SA). The SA performed in this dataset was a static SA, which 
+    considers a labeled list of Latin word with an emotional connotation. The sum of the SA labeled tokens per excerpt were 
+    noted under SA score. 
+
+    1. Does it looks like data from the real world, and for this we will utilise Benford's Law. 
+    This will easily check if the scores are conform Berford's law. 
+    2. The assumption of the SA score is that it remains similar over the centuries. 
+    This can be tested with a scatterplot and a regression line. 
+    '''
+
+    def berford_sa_score(sa: pd.Series):
+        # Convert values to string, remove negative sign, and select first character
+        leading_digits = [int(str(abs(score))[0]) for score in sa.dropna() if isinstance(score, float)]
+
+        # Compute the actual frequencies of leading digits
+        actual_count = Counter(leading_digits)
+        total_count = sum(actual_count.values())  # Total number of valid leading digits
+        actual_freq = [actual_count[d] / total_count for d in range(1, 10)]  # Normalize to proportions
+
+        # Compute the expected frequencies according to Benford's Law
+        benford_freq = [np.log10(1 + 1 / d) for d in range(1, 10)]
+
+        # Compare actual vs expected (Plotting)
+        digits = range(1, 10)
+        plt.figure(figsize=(10, 6))
+        plt.bar(digits, actual_freq, width=0.4, label='Actual', align='center', alpha=0.7)
+        plt.bar(digits, benford_freq, width=0.4, label='Benford', align='edge', alpha=0.7)
+        plt.xlabel('Leading Digit')
+        plt.ylabel('Proportion')
+        plt.title('Comparison of Leading Digit Distribution with Benford\'s Law')
+        plt.xticks(digits)
+        plt.legend()
+        plt.show()
+
+    # Example usage
+    berford_sa_score(excs_df['sa_score'])
+
+    '''
+    Benford\'s Law remains preserved. The distribution of first digits is proportional to the log of 1 + 1/digit. 
+    This means that the distribution of this SA score has probability not serious errors. 
+    '''
+
+    def scatter_with_regression(df):
+        # remove na's
+        clean_df = df[['century', 'sa_score']].dropna()
+        cent = clean_df['century']
+        sa_score = clean_df['sa_score']
+
+        # Create a scatter plot
+        plt.figure(figsize=(10, 6))
+        plt.scatter(cent, sa_score, color='blue', label='Data Points', alpha=0.2)
+
+        # Fit a regression line
+        slope, intercept, r_value, p_value, std_err = scipy.stats.linregress(cent, sa_score)
+
+        # Regression line
+        x_vals = np.array(cent)
+        y_vals = intercept + slope * x_vals
+        plt.plot(x_vals, y_vals, color='red', label=f'Regression Line (slope={slope:.2f})')
+
+        # Annotating the slope on the plot
+        plt.text(x=cent.mean(), y=sa_score.min(), s=f'Slope: {slope:.2f}', color='red', fontsize=12)
+
+        # Labels and title
+        plt.xlabel('Century')
+        plt.ylabel('SA Score')
+        plt.title('Scatter Plot of SA Score vs Century with Regression Line')
+        plt.legend()
+
+        # Show plot
+        plt.show()
+
+        print(f'Slope: {slope:.2f}')
+
+    # Call the function to create the plot
+    scatter_with_regression(excs_df)
+
+    '''
+    A temporal analysis on the sentiments of the excerpts show a increase in the total sentiment over the century (r=0.28).
+    This means that a normalisation step needs to be performed on the SA when other attributes like dominant topics or keywords 
+    are considered. 
+    This means that the total number of words with a positive connotation are used in later centuries, compared to earlier ones. 
+    This might have a historical reason which needs further investigation. 
+    '''
 
 
 # TASK 2.1
@@ -654,3 +872,4 @@ def task_3():
 # Execute all code
 task_2_1()
 task_2_2()
+task_3()
